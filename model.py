@@ -30,12 +30,12 @@ def RNN(cell, inputs, initial_state = None, initial_hidden = None, parallel_iter
 		inputs = tf.transpose(inputs, [1, 0, 2])
 		#get time_step tensor
 		input_shape = tf.shape(inputs)
-		time_step, batch_size, _ = tf.unpack(input_shape)
+		time_step, batch_size, _ = tf.unstack(input_shape)
 
 		#Create input and output tensorarray
 		input_ta = tensor_array_ops.TensorArray(dtype = inputs.dtype, size = time_step, tensor_array_name = scope + "input")
 		output_ta = tensor_array_ops.TensorArray(dtype = inputs.dtype, size = time_step, tensor_array_name = scope + "output")
-		input_ta = input_ta.unpack(inputs)
+		input_ta = input_ta.unstack(inputs)
 
 		if initial_state is None:
 			initial_state = tf.zeros([batch_size_value, cell.hidden_size])
@@ -68,7 +68,7 @@ def RNN(cell, inputs, initial_state = None, initial_hidden = None, parallel_iter
 		output_final_ta, final_hidden, final_state = loop_vars[1], loop_vars[2], loop_vars[3]
 
 		#Pack to Tensor and change the axes back
-		final_ouput = output_final_ta.pack()
+		final_ouput = output_final_ta.stack()
 		final_ouput = tf.transpose(final_ouput, [1, 0, 2])
 
 		#Restore shape information
@@ -141,7 +141,7 @@ class LSTMCell(object):
 				candidate = tf.tanh( tf.matmul(inputs , self.W) + tf.matmul(hidden_state, self.U) + tf.add_n([tf.matmul(c, w)for c, w in zip(context_list, self.c_list)]) + self.b, name = "candidate")
 				
 				new_cell_state = cell_state * f  + i * candidate 
-				new_hidden_state = tf.mul(tf.tanh(new_cell_state), o, name = "hidden_state")
+				new_hidden_state = tf.tanh(new_cell_state) * o
 				
 			else:
 				i = tf.sigmoid(tf.matmul(inputs , self.W_i) + tf.matmul(hidden_state , self.U_i)  + self.b_i, name = "input_gate")
@@ -150,7 +150,7 @@ class LSTMCell(object):
 				candidate = tf.tanh( tf.matmul(inputs , self.W) + tf.matmul(hidden_state, self.U) + self.b, name = "candidate")
 				
 				new_cell_state = cell_state * f  + i * candidate 
-				new_hidden_state = tf.mul(tf.tanh(new_cell_state), o, name = "hidden_state")
+				new_hidden_state = tf.tanh(new_cell_state) * o
 
 		return new_hidden_state, new_cell_state
 
@@ -161,455 +161,13 @@ def dropout(inputs, istraining, keep_prob=0.9, noise_shape=None, scope=None):
 		outputs = tf.nn.dropout(inputs, 1.0, noise_shape)
 	return outputs
 
-def inference6(string, feature, train, label = None):
-	#model 2
-	with tf.device("/gpu:0"):
-		with tf.variable_scope('embed') as scope:
-			embedding = variable_on_cpu('embedding', shape = [FLAGS.string_dim, FLAGS.rnn_hidden * 2], initializer = xavier_initializer())
-			inputs = tf.nn.embedding_lookup(embedding, string)
-		
-			inputs = batch_norm(inputs, updates_collections=None, is_training=True)
-			inputs = tf.nn.elu(inputs)
+def cross_entropy(label, predict, num_frames, epsilon = 1e-6):
+	float_label = tf.cast(label, tf.float32)
+	cross_entropy_loss = float_label * tf.log(predict + epsilon) + (1 - float_label) * tf.log(1-predict+epsilon)
+	cross_entropy_loss = tf.negative(cross_entropy_loss)
+	loss = tf.reduce_mean(tf.reduce_sum(cross_entropy_loss, 1))
+	return loss
 
-			
-
-		with tf.variable_scope('rnn') as scope:
-			lstm_fw = LSTMCell(FLAGS.rnn_hidden, FLAGS.rnn_hidden * 2, scope = "lstm_fw") 
-			lstm_bw = LSTMCell(FLAGS.rnn_hidden, FLAGS.rnn_hidden * 2, scope = "lstm_bw")
-			lstm_2 = LSTMCell(FLAGS.rnn_hidden, FLAGS.rnn_hidden * 2, scope = "lstm_2")
-			lstm_3 = LSTMCell(FLAGS.rnn_hidden, FLAGS.rnn_hidden , scope = "lstm_3")
-
-			output_fw, _, _ = RNN(lstm_fw, inputs, scope = "rnn_fw")
-			output_bw_temp, _, _ = RNN(lstm_bw, tf.reverse(inputs, [False, True, False]), scope = "rnn_bw")
-
-			output_bw = tf.reverse(output_bw_temp, [False, True, False])
-			inputs = tf.concat(2, [output_fw, output_bw])
-
-			inputs = batch_norm(inputs, updates_collections=None, is_training=True)
-			full_output, final_hidden, _ = RNN(lstm_2, inputs, scope = "rnn_2")
-			
-			inputs = batch_norm(full_output, updates_collections=None,  is_training=True)
-			full_output, final_hidden, _ = RNN(lstm_3, inputs, scope = "rnn_3")
-
-
-		with tf.variable_scope('vanilla') as scope:
-			W1 = variable_on_cpu('W1', shape = [FLAGS.feature_dim, FLAGS.vanilla_hidden], initializer = xavier_initializer())
-			W2 = variable_on_cpu('W2', shape = [FLAGS.vanilla_hidden, FLAGS.vanilla_hidden], initializer = xavier_initializer())
-			
-			inputs = tf.matmul(feature, W1)
-			inputs = batch_norm(inputs,updates_collections=None,  is_training=True)
-			inputs = tf.nn.elu(inputs)
-			
-			inputs = tf.matmul(inputs, W2)
-			inputs = batch_norm(inputs,updates_collections=None,  is_training=True)
-			vanilla_input = tf.nn.elu(inputs)
-
-
-		with tf.variable_scope('final') as scope:
-			joint_inputs = tf.concat(1, [final_hidden, vanilla_input])
-			joint_dim = FLAGS.rnn_hidden + FLAGS.vanilla_hidden
-			W1 = variable_on_cpu('W1', shape = [joint_dim, FLAGS.final_hidden], initializer = xavier_initializer())
-			W2 = variable_on_cpu('W2', shape = [FLAGS.final_hidden, FLAGS.final_hidden], initializer = xavier_initializer())
-			W3 = variable_on_cpu('W3', shape = [FLAGS.final_hidden, 1], initializer = xavier_initializer())
-
-			
-			inputs = tf.matmul(joint_inputs, W1)
-			inputs = batch_norm(inputs, updates_collections=None, is_training=True)
-			inputs = tf.nn.elu(inputs)
-
-			inputs = tf.matmul(inputs, W2)
-			inputs = batch_norm(inputs,updates_collections=None,  is_training=True)
-			inputs = tf.nn.elu(inputs)
-
-			inputs = batch_norm(inputs,updates_collections=None,  is_training=True)
-			inputs = tf.nn.elu(inputs)
-
-			final_ouput = tf.matmul(inputs, W3)
-			final_ouput = tf.squeeze(final_ouput)
-
-		if not train:
-			return final_ouput
-
-		with tf.variable_scope('loss') as scope:
-			loss = tf.nn.l2_loss(label - final_ouput)
-			tf.add_to_collection("loss", loss)
-			tf.summary.scalar(loss.op.name, loss)
-
-
-		tvars = tf.trainable_variables()
-		grads = tf.gradients(loss, tvars, colocate_gradients_with_ops = True)
-		grads = tf.clip_by_global_norm(grads, FLAGS.max_grad_norm)
-		grads = zip(grads[0], tvars)
-
-		return grads
-
-def inference5(string, feature, train, label = None):
-	#model 1
-	with tf.device("/gpu:0"):
-		with tf.variable_scope('embed') as scope:
-			embedding = variable_on_cpu('embedding', shape = [FLAGS.string_dim, FLAGS.rnn_hidden * 2], initializer = xavier_initializer())
-			bias = variable_on_cpu('bias', shape = [FLAGS.rnn_hidden * 2], initializer = tf.constant_initializer())
-
-			inputs = tf.nn.embedding_lookup(embedding, string)
-			inputs = tf.nn.elu(tf.nn.bias_add(inputs, bias))
-			inputs = dropout(inputs, train)
-
-		with tf.variable_scope('rnn') as scope:
-			lstm_fw = LSTMCell(FLAGS.rnn_hidden, FLAGS.rnn_hidden * 2, scope = "lstm_fw") 
-			lstm_bw = LSTMCell(FLAGS.rnn_hidden, FLAGS.rnn_hidden * 2, scope = "lstm_bw")
-			lstm_2 = LSTMCell(FLAGS.rnn_hidden, FLAGS.rnn_hidden * 2, scope = "lstm_2")
-
-			output_fw, _, _ = RNN(lstm_fw, inputs, scope = "rnn_fw")
-			output_bw_temp, _, _ = RNN(lstm_bw, tf.reverse(inputs, [False, True, False]), scope = "rnn_bw")
-
-			output_bw = tf.reverse(output_bw_temp, [False, True, False])
-			inputs = tf.concat(2, [output_fw, output_bw])
-		
-			full_output, final_hidden, _ = RNN(lstm_2, inputs, scope = "rnn_2")
-			final_hidden = dropout(final_hidden, train)
-
-		with tf.variable_scope('vanilla') as scope:
-			W1 = variable_on_cpu('W1', shape = [FLAGS.feature_dim, FLAGS.vanilla_hidden], initializer = xavier_initializer())
-			b1 = variable_on_cpu('bias1', shape = [FLAGS.vanilla_hidden], initializer = tf.constant_initializer())
-			
-			W2 = variable_on_cpu('W2', shape = [FLAGS.vanilla_hidden, FLAGS.vanilla_hidden], initializer = xavier_initializer())
-			b2 = variable_on_cpu('bias2', shape = [FLAGS.vanilla_hidden], initializer = tf.constant_initializer())
-
-			layer1 = tf.nn.elu(tf.nn.bias_add(tf.matmul(feature, W1), b1))
-			layer1 = dropout(layer1, train)
-			layer2 = tf.nn.elu(tf.nn.bias_add(tf.matmul(layer1, W2), b2))
-			layer2 = dropout(layer2, train)
-
-		with tf.variable_scope('final') as scope:
-			joint_inputs = tf.concat(1, [final_hidden, layer2])
-			joint_dim = FLAGS.rnn_hidden + FLAGS.vanilla_hidden
-			W1 = variable_on_cpu('W1', shape = [joint_dim, FLAGS.final_hidden], initializer = xavier_initializer())
-			b1 = variable_on_cpu('bias1', shape = [FLAGS.final_hidden], initializer = tf.constant_initializer())
-			
-			W2 = variable_on_cpu('W2', shape = [FLAGS.final_hidden, 1], initializer = xavier_initializer())
-			b2 = variable_on_cpu('bias2', shape = [1], initializer = tf.constant_initializer())
-
-			layer1 = tf.nn.elu(tf.nn.bias_add(tf.matmul(joint_inputs, W1), b1))
-			layer1 = dropout(layer1, train)
-			final_ouput = tf.nn.bias_add(tf.matmul(layer1, W2), b2)
-			final_ouput = tf.squeeze(final_ouput)
-
-		if not train:
-			return final_ouput
-
-		with tf.variable_scope('loss') as scope:
-			loss = tf.nn.l2_loss(label - final_ouput)
-			tf.add_to_collection("loss", loss)
-			tf.summary.scalar(loss.op.name, loss)
-
-
-		tvars = tf.trainable_variables()
-		grads = tf.gradients(loss, tvars, colocate_gradients_with_ops = True)
-		grads = tf.clip_by_global_norm(grads, FLAGS.max_grad_norm)
-		grads = zip(grads[0], tvars)
-
-		return grads
-
-def inference4(string, feature, train, label = None):
-	#model 2
-	with tf.device("/gpu:0"):
-		
-
-		with tf.variable_scope('vanilla') as scope:
-			W1 = variable_on_cpu('W1', shape = [FLAGS.feature_dim, FLAGS.vanilla_hidden], initializer = xavier_initializer())
-			W2 = variable_on_cpu('W2', shape = [FLAGS.vanilla_hidden, FLAGS.vanilla_hidden], initializer = xavier_initializer())
-			W3 = variable_on_cpu('W3', shape = [FLAGS.vanilla_hidden, FLAGS.vanilla_hidden], initializer = xavier_initializer())
-			W4 = variable_on_cpu('W4', shape = [FLAGS.vanilla_hidden, 1], initializer = xavier_initializer())
-			b = variable_on_cpu("b", shape = [1], initializer = tf.constant_initializer())
-
-
-			inputs = batch_norm(feature, is_training=train)
-			inputs = tf.nn.elu(inputs)
-			layer1 = tf.matmul(inputs, W1)
-			residual_inputs = layer1
-
-			inputs = batch_norm(layer1, is_training=train)
-			inputs = tf.nn.elu(inputs)
-			layer2 = tf.matmul(inputs, W2)
-			inputs = residual_inputs + layer2
-			residual_inputs = inputs
-
-			inputs = batch_norm(inputs, is_training=train)
-			inputs = tf.nn.elu(inputs)
-			layer3 = tf.matmul(inputs, W3)
-			vanilla_input = residual_inputs + layer3
-
-			final_ouput = tf.nn.bias_add(tf.matmul(vanilla_input, W4), b)
-			final_ouput = tf.squeeze(final_ouput)
-
-
-		if not train:
-			return final_ouput
-
-		with tf.variable_scope('loss') as scope:
-			loss = tf.nn.l2_loss(label - final_ouput)
-			tf.add_to_collection("loss", loss)
-			tf.summary.scalar(loss.op.name, loss)
-
-
-		tvars = tf.trainable_variables()
-		grads = tf.gradients(loss, tvars, colocate_gradients_with_ops = True)
-		grads = tf.clip_by_global_norm(grads, FLAGS.max_grad_norm)
-		grads = zip(grads[0], tvars)
-
-		return grads
-
-def inference3(string, feature, train, label = None):
-	#model 2
-	with tf.device("/gpu:0"):
-		with tf.variable_scope('embed') as scope:
-			embedding = variable_on_cpu('embedding', shape = [FLAGS.string_dim, FLAGS.rnn_hidden * 2], initializer = xavier_initializer())
-			inputs = tf.nn.embedding_lookup(embedding, string)
-		
-			inputs = batch_norm(inputs,  updates_collections=None, is_training=train)
-			inputs = tf.nn.elu(inputs)
-
-
-		with tf.variable_scope('rnn') as scope:
-			lstm_fw = LSTMCell(FLAGS.rnn_hidden, FLAGS.rnn_hidden * 2, scope = "lstm_fw") 
-			lstm_bw = LSTMCell(FLAGS.rnn_hidden, FLAGS.rnn_hidden * 2, scope = "lstm_bw")
-			lstm_2 = LSTMCell(FLAGS.rnn_hidden, FLAGS.rnn_hidden * 2, scope = "lstm_2")
-
-			output_fw, _, _ = RNN(lstm_fw, inputs, scope = "rnn_fw")
-			output_bw_temp, _, _ = RNN(lstm_bw, tf.reverse(inputs, [False, True, False]), scope = "rnn_bw")
-
-			output_bw = tf.reverse(output_bw_temp, [False, True, False])
-			inputs = tf.concat(2, [output_fw, output_bw])
-
-			inputs = batch_norm(inputs, updates_collections=None, is_training=train)
-			full_output, final_hidden, _ = RNN(lstm_2, inputs, scope = "rnn_2")
-			
-
-		with tf.variable_scope('vanilla') as scope:
-			W1 = variable_on_cpu('W1', shape = [FLAGS.feature_dim, FLAGS.vanilla_hidden], initializer = xavier_initializer())
-			W2 = variable_on_cpu('W2', shape = [FLAGS.vanilla_hidden, FLAGS.vanilla_hidden], initializer = xavier_initializer())
-			W3 = variable_on_cpu('W3', shape = [FLAGS.vanilla_hidden, FLAGS.vanilla_hidden], initializer = xavier_initializer())
-
-
-			inputs = batch_norm(feature, updates_collections=None, is_training=train)
-			inputs = tf.nn.elu(inputs)
-			layer1 = tf.matmul(inputs, W1)
-			residual_inputs = layer1
-
-			inputs = batch_norm(layer1, updates_collections=None, is_training=train)
-			inputs = tf.nn.elu(inputs)
-			layer2 = tf.matmul(inputs, W2)
-			inputs = residual_inputs + layer2
-			residual_inputs = inputs
-
-			inputs = batch_norm(inputs, updates_collections=None, is_training=train)
-			inputs = tf.nn.elu(inputs)
-			layer3 = tf.matmul(inputs, W3)
-			vanilla_input = residual_inputs + layer3
-
-
-		with tf.variable_scope('final') as scope:
-			joint_inputs = tf.concat(1, [final_hidden, vanilla_input])
-			joint_dim = FLAGS.rnn_hidden + FLAGS.vanilla_hidden
-			W1 = variable_on_cpu('W1', shape = [joint_dim, FLAGS.final_hidden], initializer = xavier_initializer())
-			W2 = variable_on_cpu('W2', shape = [FLAGS.final_hidden, FLAGS.final_hidden], initializer = xavier_initializer())
-			W3 = variable_on_cpu('W3', shape = [FLAGS.final_hidden, 1], initializer = xavier_initializer())
-			b = variable_on_cpu('b', shape = [1], initializer = tf.constant_initializer())
-
-			inputs = batch_norm(joint_inputs, updates_collections=None, is_training=train)
-			inputs = tf.nn.elu(inputs)
-			layer1 = tf.matmul(inputs, W1)
-			residual_inputs = layer1
-
-			inputs = batch_norm(layer1, updates_collections=None, is_training=train)
-			inputs = tf.nn.elu(inputs)
-			layer2 = tf.matmul(inputs, W2)
-			layer2 = residual_inputs + layer2
-			
-			final_ouput = tf.nn.bias_add(tf.matmul(layer2, W3), b)
-			final_ouput = tf.squeeze(final_ouput)
-
-		if not train:
-			return final_ouput
-
-		with tf.variable_scope('loss') as scope:
-			loss = tf.nn.l2_loss(label - final_ouput)
-			tf.add_to_collection("loss", loss)
-			tf.summary.scalar(loss.op.name, loss)
-
-
-		tvars = tf.trainable_variables()
-		grads = tf.gradients(loss, tvars, colocate_gradients_with_ops = True)
-		grads = tf.clip_by_global_norm(grads, FLAGS.max_grad_norm)
-		grads = zip(grads[0], tvars)
-
-		return grads
-
-def inference2(string, feature, train, label = None):
-	#model 2
-	with tf.device("/gpu:0"):
-		with tf.variable_scope('embed') as scope:
-			embedding = variable_on_cpu('embedding', shape = [FLAGS.string_dim, FLAGS.rnn_hidden * 2], initializer = xavier_initializer())
-			inputs = tf.nn.embedding_lookup(embedding, string)
-		
-			inputs = batch_norm(inputs, updates_collections=None, is_training=train)
-			inputs = tf.nn.elu(inputs)
-
-			
-
-		with tf.variable_scope('rnn') as scope:
-			lstm_fw = LSTMCell(FLAGS.rnn_hidden, FLAGS.rnn_hidden * 2, scope = "lstm_fw") 
-			lstm_bw = LSTMCell(FLAGS.rnn_hidden, FLAGS.rnn_hidden * 2, scope = "lstm_bw")
-			lstm_2 = LSTMCell(FLAGS.rnn_hidden, FLAGS.rnn_hidden * 2, scope = "lstm_2")
-			lstm_3 = LSTMCell(FLAGS.rnn_hidden, FLAGS.rnn_hidden , scope = "lstm_3")
-
-			output_fw, _, _ = RNN(lstm_fw, inputs, scope = "rnn_fw")
-			output_bw_temp, _, _ = RNN(lstm_bw, tf.reverse(inputs, [False, True, False]), scope = "rnn_bw")
-
-			output_bw = tf.reverse(output_bw_temp, [False, True, False])
-			inputs = tf.concat(2, [output_fw, output_bw])
-
-			inputs = batch_norm(inputs, updates_collections=None, is_training=train)
-			full_output, final_hidden, _ = RNN(lstm_2, inputs, scope = "rnn_2")
-			residual_inputs = final_hidden
-
-			inputs = batch_norm(full_output,updates_collections=None,  is_training=train)
-			full_output, final_hidden, _ = RNN(lstm_3, inputs, scope = "rnn_3")
-			final_hidden = final_hidden + residual_inputs
-
-
-		with tf.variable_scope('vanilla') as scope:
-			W1 = variable_on_cpu('W1', shape = [FLAGS.feature_dim, FLAGS.vanilla_hidden], initializer = xavier_initializer())
-			W2 = variable_on_cpu('W2', shape = [FLAGS.vanilla_hidden, FLAGS.vanilla_hidden], initializer = xavier_initializer())
-
-			W3 = variable_on_cpu('W3', shape = [FLAGS.vanilla_hidden, FLAGS.vanilla_hidden], initializer = xavier_initializer())
-
-
-			inputs = batch_norm(feature,updates_collections=None,  is_training=train)
-			inputs = tf.nn.elu(inputs)
-			layer1 = tf.matmul(inputs, W1)
-			residual_inputs = layer1
-
-			inputs = batch_norm(layer1,updates_collections=None,  is_training=train)
-			inputs = tf.nn.elu(inputs)
-			layer2 = tf.matmul(inputs, W2)
-			inputs = residual_inputs + layer2
-			residual_inputs = inputs
-
-			inputs = batch_norm(inputs,updates_collections=None,  is_training=train)
-			inputs = tf.nn.elu(inputs)
-			layer3 = tf.matmul(inputs, W3)
-			vanilla_input = residual_inputs + layer3
-
-
-		with tf.variable_scope('final') as scope:
-			joint_inputs = tf.concat(1, [final_hidden, vanilla_input])
-			joint_dim = FLAGS.rnn_hidden + FLAGS.vanilla_hidden
-			W1 = variable_on_cpu('W1', shape = [joint_dim, FLAGS.final_hidden], initializer = xavier_initializer())
-			W2 = variable_on_cpu('W2', shape = [FLAGS.final_hidden, FLAGS.final_hidden], initializer = xavier_initializer())
-			W3 = variable_on_cpu('W3', shape = [FLAGS.final_hidden, FLAGS.final_hidden], initializer = xavier_initializer())
-			W4 = variable_on_cpu('W4', shape = [FLAGS.final_hidden, 1], initializer = xavier_initializer())
-
-			inputs = batch_norm(joint_inputs, updates_collections=None, is_training=train)
-			inputs = tf.nn.elu(inputs)
-			layer1 = tf.matmul(inputs, W1)
-			residual_inputs = layer1
-
-			inputs = batch_norm(layer1,updates_collections=None,  is_training=train)
-			inputs = tf.nn.elu(inputs)
-			layer2 = tf.matmul(inputs, W2)
-
-			inputs = batch_norm(layer2,updates_collections=None,  is_training=train)
-			inputs = tf.nn.elu(inputs)
-			layer3 = tf.matmul(inputs, W3)
-
-			inputs = residual_inputs + layer3
-			final_ouput = tf.matmul(inputs, W4)
-			final_ouput = tf.squeeze(final_ouput)
-
-		if not train:
-			return final_ouput
-
-		with tf.variable_scope('loss') as scope:
-			loss = tf.nn.l2_loss(label - final_ouput)
-			tf.add_to_collection("loss", loss)
-			tf.summary.scalar(loss.op.name, loss)
-
-
-		tvars = tf.trainable_variables()
-		grads = tf.gradients(loss, tvars, colocate_gradients_with_ops = True)
-		grads = tf.clip_by_global_norm(grads, FLAGS.max_grad_norm)
-		grads = zip(grads[0], tvars)
-
-		return grads
-
-
-
-def inference1(string, feature, train, label = None):
-	#model 1
-	with tf.device("/gpu:0"):
-		with tf.variable_scope('embed') as scope:
-			embedding = variable_on_cpu('embedding', shape = [FLAGS.string_dim, FLAGS.rnn_hidden * 2], initializer = xavier_initializer())
-			bias = variable_on_cpu('bias', shape = [FLAGS.rnn_hidden * 2], initializer = tf.constant_initializer())
-
-			inputs = tf.nn.embedding_lookup(embedding, string)
-			inputs = tf.nn.elu(tf.nn.bias_add(inputs, bias))
-
-		with tf.variable_scope('rnn') as scope:
-			lstm_fw = LSTMCell(FLAGS.rnn_hidden, FLAGS.rnn_hidden * 2, scope = "lstm_fw") 
-			lstm_bw = LSTMCell(FLAGS.rnn_hidden, FLAGS.rnn_hidden * 2, scope = "lstm_bw")
-			lstm_2 = LSTMCell(FLAGS.rnn_hidden, FLAGS.rnn_hidden * 2, scope = "lstm_2")
-
-			output_fw, _, _ = RNN(lstm_fw, inputs, scope = "rnn_fw")
-			output_bw_temp, _, _ = RNN(lstm_bw, tf.reverse(inputs, [False, True, False]), scope = "rnn_bw")
-
-			output_bw = tf.reverse(output_bw_temp, [False, True, False])
-			inputs = tf.concat(2, [output_fw, output_bw])
-		
-			full_output, final_hidden, _ = RNN(lstm_2, inputs, scope = "rnn_2")
-
-		with tf.variable_scope('vanilla') as scope:
-			W1 = variable_on_cpu('W1', shape = [FLAGS.feature_dim, FLAGS.vanilla_hidden], initializer = xavier_initializer())
-			b1 = variable_on_cpu('bias1', shape = [FLAGS.vanilla_hidden], initializer = tf.constant_initializer())
-			
-			W2 = variable_on_cpu('W2', shape = [FLAGS.vanilla_hidden, FLAGS.vanilla_hidden], initializer = xavier_initializer())
-			b2 = variable_on_cpu('bias2', shape = [FLAGS.vanilla_hidden], initializer = tf.constant_initializer())
-
-			layer1 = tf.nn.elu(tf.nn.bias_add(tf.matmul(feature, W1), b1))
-			layer2 = tf.nn.elu(tf.nn.bias_add(tf.matmul(layer1, W2), b2))
-
-		with tf.variable_scope('final') as scope:
-			joint_inputs = tf.concat(1, [final_hidden, layer2])
-			joint_dim = FLAGS.rnn_hidden + FLAGS.vanilla_hidden
-			W1 = variable_on_cpu('W1', shape = [joint_dim, FLAGS.final_hidden], initializer = xavier_initializer())
-			b1 = variable_on_cpu('bias1', shape = [FLAGS.final_hidden], initializer = tf.constant_initializer())
-			
-			W2 = variable_on_cpu('W2', shape = [FLAGS.final_hidden, 1], initializer = xavier_initializer())
-			b2 = variable_on_cpu('bias2', shape = [1], initializer = tf.constant_initializer())
-
-			layer1 = tf.nn.elu(tf.nn.bias_add(tf.matmul(joint_inputs, W1), b1))
-			final_ouput = tf.nn.bias_add(tf.matmul(layer1, W2), b2)
-			final_ouput = tf.squeeze(final_ouput)
-
-		if not train:
-			return final_ouput
-
-		with tf.variable_scope('loss') as scope:
-			loss = tf.nn.l2_loss(label - final_ouput)
-			tf.add_to_collection("loss", loss)
-			tf.summary.scalar(loss.op.name, loss)
-
-
-		tvars = tf.trainable_variables()
-		grads = tf.gradients(loss, tvars, colocate_gradients_with_ops = True)
-		grads = tf.clip_by_global_norm(grads, FLAGS.max_grad_norm)
-		grads = zip(grads[0], tvars)
-
-		return grads
-
-
-def inference(string, feature, train, label = None):
-	return inference4(string, feature, train, label = label)
 
 
 

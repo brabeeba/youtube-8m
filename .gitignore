@@ -1,3 +1,6 @@
 *tfrecord
 *.slurm
 starter
+tensorboard
+train_dir
+*.sh

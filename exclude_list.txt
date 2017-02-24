@@ -1,0 +1,5 @@
+tensorboard
+*.tfrecord
+starter
+train_dir
+.git*

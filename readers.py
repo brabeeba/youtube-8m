@@ -76,7 +76,7 @@ class YT8MAggregatedFeatureReader(BaseReader):
 	The float features are assumed to be an average of dequantized values.
 	"""
 
-	def __init__(self, num_classes=4716):
+	def __init__(self, num_classes):
 		"""Construct a YT8MAggregatedFeatureReader.
 
 		Args:
@@ -102,8 +102,8 @@ class YT8MAggregatedFeatureReader(BaseReader):
 		
 		feature_map = {"video_id": tf.FixedLenFeature([], tf.string),
 									 "labels": tf.VarLenFeature(tf.int64),
-									 "mean_rgb": tf.FixedLenFeature([1024], tf.float32),
-									 "mean_audio": tf.FixedLenFeature([128], tf.float32)}
+									 "mean_rgb": tf.FixedLenFeature([FLAGS.rgb_size], tf.float32),
+									 "mean_audio": tf.FixedLenFeature([FLAGS.audio_size], tf.float32)}
 
 		features = tf.parse_single_example(serialized_example,
 																			 features=feature_map)
@@ -124,9 +124,7 @@ class YT8MFrameFeatureReader(BaseReader):
 	back into a range between min_quantized_value and max_quantized_value.
 	"""
 
-	def __init__(self,
-							 num_classes=4716,
-							 max_frames=300):
+	def __init__(self,num_classes,max_frames):
 		"""Construct a YT8MFrameFeatureReader.
 
 		Args:
@@ -165,8 +163,8 @@ class YT8MFrameFeatureReader(BaseReader):
 		labels = tf.cast(tf.sparse_to_dense(contexts["labels"].values, (self.num_classes,), 1, 
 			validate_indices=False), tf.int32)
 
-		rgb = tf.reshape(tf.cast(tf.decode_raw(features["rgb"], tf.uint8), tf.float32), [-1, 1024])
-		audio = tf.reshape(tf.cast(tf.decode_raw(features["audio"], tf.uint8), tf.float32), [-1, 128])
+		rgb = tf.reshape(tf.cast(tf.decode_raw(features["rgb"], tf.uint8), tf.float32), [-1, FLAGS.rgb_size])
+		audio = tf.reshape(tf.cast(tf.decode_raw(features["audio"], tf.uint8), tf.float32), [-1, FLAGS.audio_size])
 		num_frames = tf.minimum(tf.shape(rgb)[0], self.max_frames)
 		tf.assert_equal(tf.shape(rgb)[0], tf.shape(audio)[0])
 
@@ -184,7 +182,7 @@ def generate_batch(inputs, min_queue_examples, batch_size, train):
 def input(train):
 	files = tf.gfile.Glob(os.path.join(FLAGS.data_frame_dir,"train*.tfrecord"))
 	filename_queue = tf.train.string_input_producer(files, shuffle = True)
-	reader = YT8MFrameFeatureReader()
+	reader = YT8MFrameFeatureReader(FLAGS.num_class, FLAGS.time_size)
 
 	inputs = [ reader.prepare_reader(filename_queue) for x in xrange(0, FLAGS.num_reader)]
 
