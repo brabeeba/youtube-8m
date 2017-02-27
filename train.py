@@ -61,7 +61,8 @@ def train():
 
 
 		ckpt = tf.train.get_checkpoint_state(FLAGS.train_dir)
-		#saver.restore(sess, ckpt.model_checkpoint_path)
+		if not FLAGS.new_model:
+			saver.restore(sess, ckpt.model_checkpoint_path)
 
 		#loader.restore(sess, ckpt.model_checkpoint_path)
 

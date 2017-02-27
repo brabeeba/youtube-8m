@@ -3,3 +3,4 @@ tensorboard
 starter
 train_dir
 .git*
+*.csv

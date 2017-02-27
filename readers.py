@@ -180,19 +180,31 @@ def generate_batch(inputs, min_queue_examples, batch_size, train):
 	
 
 def input(train):
-	files = tf.gfile.Glob(os.path.join(FLAGS.data_frame_dir,"train*.tfrecord"))
-	filename_queue = tf.train.string_input_producer(files, shuffle = True)
-	reader = YT8MFrameFeatureReader(FLAGS.num_class, FLAGS.time_size)
-
-	inputs = [ reader.prepare_reader(filename_queue) for x in xrange(0, FLAGS.num_reader)]
 
 	NUM_EXAMPLES_PER_EPOCH_FOR_TRAIN = 5000
 	min_fraction_of_examples_in_queue = 0.4
 	min_queue_examples = int(NUM_EXAMPLES_PER_EPOCH_FOR_TRAIN * min_fraction_of_examples_in_queue)
 
 
-	video_id_batch, label_batch, rgb_batch, audio_batch, num_frames_batch = generate_batch(inputs, min_queue_examples, FLAGS.batch_size, train)
-	
-	return video_id_batch, label_batch, rgb_batch, audio_batch, num_frames_batch
+	if train:
+		files = tf.gfile.Glob(os.path.join(FLAGS.data_frame_dir,"train*.tfrecord"))
+		filename_queue = tf.train.string_input_producer(files, shuffle = True)
+		reader = YT8MFrameFeatureReader(FLAGS.num_class, FLAGS.time_size)
+
+		inputs = [ reader.prepare_reader(filename_queue) for x in xrange(0, FLAGS.num_reader)]
+
+		
+		video_id_batch, label_batch, rgb_batch, audio_batch, num_frames_batch = generate_batch(inputs, min_queue_examples, FLAGS.batch_size, train)
+		
+		return video_id_batch, label_batch, rgb_batch, audio_batch, num_frames_batch
+	else:
+		files = tf.gfile.Glob(os.path.join(FLAGS.data_frame_dir,"test*.tfrecord"))
+		filename_queue = tf.train.string_input_producer(files, num_epochs= 1)
+		reader = YT8MFrameFeatureReader(FLAGS.num_class, FLAGS.time_size)
+		inputs = reader.prepare_reader(filename_queue)
+
+		video_id_batch, label_batch, rgb_batch, audio_batch, num_frames_batch = tf.train.batch(inputs, batch_size = FLAGS.batch_size, allow_smaller_final_batch = False)
+		return video_id_batch, label_batch, rgb_batch, audio_batch, num_frames_batch
+
 
 	

@@ -4,9 +4,10 @@ flags = tf.app.flags
 FLAGS = flags.FLAGS
 
 server = True
-current_model = 0
+current_model = 1
 
 flags.DEFINE_bool('server', server, "A boolean to indicate if the training is at server or local")
+flags.DEFINE_bool('new_model', False, "A boolean to indicate if this is a new model")
 
 if server:
 	flags.DEFINE_string('train_dir', "/n/coxfs01/brabeeba/youtube-8m/train_dir", "directory for training log and model")
@@ -50,6 +51,14 @@ if current_model == 0:
 	flags.DEFINE_integer('rnn_audio_layer', 1, "number of layer for audio")
 
 	flags.DEFINE_integer('final_hidden', 512, "hidden unit in last fc layer")
+elif current_model == 1:
+	flags.DEFINE_integer('rnn_rgb_hidden', 512, "Hidden Layer in rgn rnn")
+	flags.DEFINE_integer('rnn_audio_hidden', 128, "Hidden Layer in audio rnn")
+
+	flags.DEFINE_integer('rnn_rgb_layer', 1, "number of layer for rgb")
+	flags.DEFINE_integer('rnn_audio_layer', 1, "number of layer for audio")
+
+	flags.DEFINE_integer('final_hidden', 1024, "hidden unit in last fc layer")
 	
 
 
